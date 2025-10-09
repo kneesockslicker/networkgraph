@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Course Similarity Network</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+
+<body>
+  <header>Course Similarity Network Analysis</header>
+  <div id="messages"></div>
+  <div class="controls">
+    <button id="loose" class="network-btn">Loose (≥0.3)</button>
+    <button id="medium" class="network-btn active">Medium (≥0.5)</button>
+    <button id="medium-tight" class="network-btn">Med‑Tight (≥0.6)</button>
+    <button id="tight" class="network-btn">Tight (≥0.7)</button>
+    <button id="reset-zoom" class="network-btn secondary">Reset Zoom</button>
+    <button id="center-graph" class="network-btn secondary">Re‑center</button>
+    <input id="search" type="search" placeholder="Find course code or title">
+  </div>
+
+
+
+  <div id="stage">
+    <div id="legend">
+      <div id="stats-content"></div>
+      <h3>Filters</h3>
+      <div id="legend-content"></div>
+    </div>
+    <div id="network"></div>
+  </div>
+
+  <script>
+    // Data files
+    const FILES = {
+      loose: "course_network_loose.json",
+      medium: "course_network_medium.json",
+      mediumtight: "course_network_medium_tight.json",
+      tight: "course_network_tight.json"
+    };
+
+    // State
+    let currentData = null;
+    let svg, g, simulation, linkSel, nodeSel, tooltip;
+    let width = 1400, height = 900;
+    let zoomBehavior; // shared zoom instance
+
+    const activeSubjects = new Set();
+    const activeYears = new Set();
+    let allSubjects = [];
+    let allYears = [];
+
+    // Helper: node passes subject/year filters
+    function passesNodeFilters(n) {
+      const subjOk = activeSubjects.size > 0 && activeSubjects.has(n.subject);
+      const yrVal = Number.isFinite(+n.level) ? +n.level : null;
+      const yearOk = activeYears.size > 0 && yrVal !== null && activeYears.has(yrVal);
+      return subjOk && yearOk;
+    }
+    // Edge colors and active filters
+    const edgeColors = { similarity: "#9E9E9E", prereq: "#1976D2", coreq: "#2E7D32", antireq: "#C62828" };
+    const activeTypes = new Set(["similarity", "prereq", "coreq", "antireq"]);
+
+    // UI helpers
+    function showMessage(msg, type = "info") {
+      const m = document.getElementById("messages");
+      const cls = type === "error" ? "error" : type === "loading" ? "loading" : "info";
+      m.innerHTML = '<span class="' + cls + '">' + msg + '</span>';
+      if (type !== "error") setTimeout(() => { m.innerHTML = ""; }, 3000);
+    }
+
+    // Init SVG and zoom
+    function initializeViz() {
+      const stage = document.getElementById("stage");
+      const rect = stage.getBoundingClientRect();
+      width = rect.width; height = rect.height;
+
+      svg = d3.select("#network").append("svg")
+        .attr("width", width)
+        .attr("height", height);
+
+      g = svg.append("g");
+
+      // Small color-matched arrowheads for directed edges
+      const defs = svg.append("defs");
+      [
+        { id: "arrow-prereq", color: edgeColors.prereq },
+        { id: "arrow-coreq", color: edgeColors.coreq },
+        { id: "arrow-antireq", color: edgeColors.antireq }
+      ].forEach(m => {
+        defs.append("marker")
+          .attr("id", m.id).attr("viewBox", "0 -5 10 10")
+          .attr("refX", 10).attr("refY", 0)
+          .attr("markerWidth", 4).attr("markerHeight", 4)
+          .attr("orient", "auto")
+          .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", m.color);
+      });
+
+      // One zoom behavior bound to SVG
+      zoomBehavior = d3.zoom()
+        .scaleExtent([0.1, 8])
+        .on("zoom", (ev) => g.attr("transform", ev.transform));
+      svg.call(zoomBehavior);
+
+      // Tooltip
+      tooltip = d3.select("body").append("div")
+        .attr("class", "tooltip")
+        .style("opacity", 0);
+
+      // Resize
+      window.addEventListener("resize", () => {
+        const r = stage.getBoundingClientRect();
+        width = r.width; height = r.height;
+        svg.attr("width", width).attr("height", height);
+      });
+    }
+
+    function buildFilterLegend(extra = {}) {
+      const items = [
+        { key: "similarity", label: "Similarity", color: edgeColors.similarity },
+        { key: "prereq", label: "Prerequisite", color: edgeColors.prereq },
+        { key: "coreq", label: "Corequisite", color: edgeColors.coreq },
+        { key: "antireq", label: "Antirequisite", color: edgeColors.antireq }
+      ];
+
+      const subjects = (extra.subjects || allSubjects);
+      const years = (extra.years || allYears);
+
+      const el = document.getElementById("legend-content");
+
+      el.innerHTML = `
+    <div class="legend-section">
+      <div class="legend-title">Requisites</div>
+      <label class="legend-item" style="cursor:pointer;">
+        <input type="checkbox" id="edge-types-all" checked>
+        <span class="color-dot" style="background:#bbb"></span>Select all
+      </label>
+      <div id="edge-types">
+        ${items.map(i => `
+          <label class="legend-item" style="cursor:pointer;">
+            <input type="checkbox" data-et="${i.key}" ${activeTypes.has(i.key) ? "checked" : ""}>
+            <span class="color-dot" style="background:${i.color}"></span>${i.label}
+          </label>`).join("")}
+      </div>
+    </div>
+
+    <div class="legend-section">
+      <div class="legend-title">Subject</div>
+
+      <div id="subjects-list">
+        <label class="legend-item" style="cursor:pointer;">
+          <input type="checkbox" id="subjects-all" checked>
+          <span class="color-dot" style="background:#bbb"></span>Select all
+        </label>
+        ${subjects.map(s => `
+          <label class="legend-item" style="cursor:pointer;">
+            <input type="checkbox" data-subject="${s}" checked>
+            <span class="color-dot" style="background:#bbb"></span>${s}
+          </label>`).join("")}
+      </div>
+    </div>
+
+    <div class="legend-section">
+      <div class="legend-title">Year</div>
+      <label class="legend-item" style="cursor:pointer;">
+        <input type="checkbox" id="years-all" checked>
+        <span class="color-dot" style="background:#bbb"></span>Select all
+      </label>
+      <div id="years-list">
+        ${years.map(y => `
+          <label class="legend-item" style="cursor:pointer;">
+            <input type="checkbox" data-year="${y}" checked>
+            <span class="color-dot" style="background:#bbb"></span>Year ${y}
+          </label>`).join("")}
+      </div>
+    </div>
+  `;
+
+      // Initialize subject/year selections to "all checked"
+      activeSubjects.clear(); subjects.forEach(s => activeSubjects.add(s));
+      activeYears.clear(); years.forEach(y => activeYears.add(+y));
+
+      // Edge-type listeners (existing behavior)
+      el.querySelectorAll('input[data-et]').forEach(cb => {
+        cb.addEventListener("change", (ev) => {
+          const k = ev.target.getAttribute("data-et");
+          if (ev.target.checked) activeTypes.add(k); else activeTypes.delete(k);
+          applyFilters();
+        });
+      });
+
+      // Subject listeners
+      el.querySelectorAll('input[data-subject]').forEach(cb => {
+        cb.addEventListener("change", (ev) => {
+          const s = ev.target.getAttribute("data-subject");
+          if (ev.target.checked) activeSubjects.add(s); else activeSubjects.delete(s);
+          applyFilters();
+        });
+      });
+
+      // Year listeners
+      el.querySelectorAll('input[data-year]').forEach(cb => {
+        cb.addEventListener("change", (ev) => {
+          const y = +ev.target.getAttribute("data-year");
+          if (ev.target.checked) activeYears.add(y); else activeYears.delete(y);
+          applyFilters();
+        });
+      });
+
+      // Wire Select-all masters
+      const edgeAll = el.querySelector('#edge-types-all');
+      const subjAll = el.querySelector('#subjects-all');
+      const yearAll = el.querySelector('#years-all');
+
+      edgeAll.addEventListener("change", () => {
+        const keys = ["similarity", "prereq", "coreq", "antireq"];
+        if (edgeAll.checked) keys.forEach(k => activeTypes.add(k)); else keys.forEach(k => activeTypes.delete(k));
+        el.querySelectorAll('#edge-types input[data-et]').forEach(cb => cb.checked = edgeAll.checked);
+        updateSelectAllStates(); applyFilters();
+      });
+
+      subjAll.addEventListener("change", () => {
+        if (subjAll.checked) { activeSubjects.clear(); subjects.forEach(s => activeSubjects.add(s)); }
+        else { activeSubjects.clear(); }
+        el.querySelectorAll('#subjects-list input[data-subject]').forEach(cb => cb.checked = subjAll.checked);
+        updateSelectAllStates(); applyFilters();
+      });
+
+      yearAll.addEventListener("change", () => {
+        if (yearAll.checked) { activeYears.clear(); years.forEach(y => activeYears.add(+y)); }
+        else { activeYears.clear(); }
+        el.querySelectorAll('#years-list input[data-year]').forEach(cb => cb.checked = yearAll.checked);
+        updateSelectAllStates(); applyFilters();
+      });
+
+      // Initialize master states once
+      updateSelectAllStates();
+    }
+
+    function updateSelectAllStates() {
+      const el = document.getElementById("legend-content");
+      const edgeAll = el.querySelector('#edge-types-all');
+      const subjAll = el.querySelector('#subjects-all');
+      const yearAll = el.querySelector('#years-all');
+
+      setMasterState(edgeAll, el.querySelectorAll('#edge-types input[data-et]'));
+      setMasterState(subjAll, el.querySelectorAll('#subjects-list input[data-subject]'));
+      setMasterState(yearAll, el.querySelectorAll('#years-list input[data-year]'));
+    }
+
+    function setMasterState(master, nodeList) {
+      const list = Array.from(nodeList);
+      const total = list.length;
+      const checkedCount = list.reduce((acc, cb) => acc + (cb.checked ? 1 : 0), 0);
+      master.indeterminate = checkedCount > 0 && checkedCount < total; // tri-state
+      master.checked = checkedCount === total; // all or none
+    }
+
+    const BASE_OPACITY = { similarity: 0.5, prereq: 0.9, coreq: 0.9, antireq: 0.9 };
+    // Apply filters without restarting forces
+    function applyFilters() {
+      const visibleNodes = new Set();
+      if (currentData) {
+        for (const n of currentData.nodes) {
+          if (passesNodeFilters(n)) visibleNodes.add(n.id);
+        }
+      }
+
+      if (linkSel) {
+        linkSel
+          .attr("visibility", e => {
+            if (!activeTypes.has(e.type)) return "hidden";
+            const s = e.source.id ?? e.source;
+            const t = e.target.id ?? e.target;
+            return (visibleNodes.has(s) && visibleNodes.has(t)) ? "visible" : "hidden";
+          })
+          .style("opacity", e => {
+            const base = BASE_OPACITY[e.type] ?? 0.8;
+            const s = e.source.id ?? e.source;
+            const t = e.target.id ?? e.target;
+            return (activeTypes.has(e.type) && visibleNodes.has(s) && visibleNodes.has(t)) ? base : 0;
+          })
+          .style("stroke", e => e.color || edgeColors[e.type] || "#888")
+          .style("stroke-width", e => edgeWidth(e));
+      }
+
+      // Degree map from visible links only
+      const deg = new Map();
+      if (currentData) {
+        for (const e of currentData.links) {
+          if (!activeTypes.has(e.type)) continue;
+          const s = e.source.id ?? e.source, t = e.target.id ?? e.target;
+          if (!visibleNodes.has(s) || !visibleNodes.has(t)) continue;
+          deg.set(s, (deg.get(s) || 0) + 1);
+          deg.set(t, (deg.get(t) || 0) + 1);
+        }
+      }
+
+      if (nodeSel) {
+        nodeSel
+          .attr("visibility", n => visibleNodes.has(n.id) ? "visible" : "hidden")
+          .style("opacity", n => visibleNodes.has(n.id) ? 1 : 0.1)
+          .style("stroke-width", n => visibleNodes.has(n.id) ? 1.25 : 1);
+      }
+
+      updateStatsVisible(visibleNodes);
+    }
+
+    function updateStatsVisible(visibleNodes) {
+      const stats = document.getElementById("stats-content");
+      const V = visibleNodes;
+      const visibleLinks = currentData.links.filter(e => {
+        if (!activeTypes.has(e.type)) return false;
+        const s = e.source.id ?? e.source, t = e.target.id ?? e.target;
+        return V.has(s) && V.has(t);
+      });
+      const sims = visibleLinks.filter(e => e.type === "similarity");
+      const avgSim = sims.length ? (sims.reduce((s, e) => s + (e.value || 0), 0) / sims.length).toFixed(3) : "N/A";
+      stats.innerHTML =
+        `<div><strong>Courses:</strong> ${V.size}</div>
+     <div><strong>Connections:</strong> ${visibleLinks.length}</div>
+     <div><strong>Avg Similarity (visible):</strong> ${avgSim}</div>`;
+    }
+
+
+    // Search + zoom to node
+    function normalize(s) { return (s || "").toString().toLowerCase(); }
+
+    function highlightSelection(matches) {
+      const ids = new Set(matches.map(n => n.id));
+      nodeSel
+        .style("stroke", n => ids.has(n.id) ? "#000" : "#fff")
+        .style("stroke-width", n => ids.has(n.id) ? 2.5 : 1)
+        .attr("r", n => ids.has(n.id) ? nodeRadius(n) + 2 : nodeRadius(n));
+
+      linkSel
+        .attr("visibility", e => activeTypes.has(e.type) ? "visible" : "hidden")
+        .style("opacity", e => {
+          if (!activeTypes.has(e.type)) return 0;
+          const hit = ids.has(e.source.id ?? e.source) || ids.has(e.target.id ?? e.target);
+          return hit ? 1.0 : 0.15;
+        });
+    }
+
+    function wireSearch() {
+      const input = document.getElementById("search");
+      input.addEventListener("input", () => {
+        const q = normalize(input.value);
+        if (!q) { applyFilters(); return; }
+        const matches = currentData?.nodes.filter(n =>
+          normalize(n.id).includes(q) || normalize(n.name).includes(q)) || [];
+        highlightSelection(matches);
+        if (matches.length && svg && zoomBehavior) {
+          const n = matches[0];
+          const k = 1.5; // target zoom
+          svg.transition().duration(450)
+            .call(zoomBehavior.translateTo, n.x || 0, n.y || 0)  // center on node [web:466][web:584]
+            .transition().duration(200)
+            .call(zoomBehavior.scaleTo, k);                      // then scale [web:466][web:624]
+        }
+      });
+    }
+
+    // Data validation
+    function validateData(data) {
+      if (!Array.isArray(data.nodes) || !Array.isArray(data.links)) {
+        throw new Error("Expected {nodes:[], links:[]} shape");
+      }
+      const ids = new Set(data.nodes.map(d => d.id));
+      data.links = data.links.filter(e => ids.has(e.source) && ids.has(e.target));
+      return data;
+    }
+
+    // Sizing
+    function nodeRadius(d) {
+      // Level is small band (0..9). Base 4px + 1.5px per band (cap at 5). Adjust as needed.
+      const yr = Math.max(0, Math.min(5, +d.level || 0));
+      return 4 + yr * 1.5;
+    }
+
+    // Edge width mapping
+    function edgeWidth(e) {
+      if (e.type === "similarity" && typeof e.value === "number") {
+        const v = Math.max(0.3, Math.min(1.0, e.value));
+        return 1 + (v - 0.3) * (3 / 0.7);
+      }
+      return e.width ? +e.width : 2.2;
+    }
+
+    // Tooltip handlers
+    function handleMouseOver(event, d) {
+      tooltip.transition().duration(150).style("opacity", 0.95);
+      const html =
+        `<strong>${d.name || d.id}</strong><br/>` +
+        `Subject: ${d.subject ?? ""}<br/>` +
+        `Code: ${d.code ?? d.id}<br/>` +
+        `Level: ${d.level ?? ""}<br/>` +
+        (d.description ? `<em>${d.description}</em>` : "");
+      tooltip.html(html)
+        .style("left", (event.pageX + 10) + "px")
+        .style("top", (event.pageY - 24) + "px");
+    }
+    function handleMouseOut() { tooltip.transition().duration(250).style("opacity", 0); }
+
+    // Stats panel
+    function updateStats(data) {
+      const stats = document.getElementById("stats-content");
+      const sims = data.links.filter(e => e.type === "similarity");
+      const avgSim = sims.length ? (sims.reduce((s, e) => s + (e.value || 0), 0) / sims.length).toFixed(3) : "N/A";
+      stats.innerHTML =
+        `<div><strong>Courses:</strong> ${data.nodes.length}</div>
+         <div><strong>Connections:</strong> ${data.links.length}</div>
+         <div><strong>Avg Similarity (visible):</strong> ${avgSim}</div>`;
+    }
+
+    function shortenSegment(x1, y1, x2, y2, startOffset, endOffset) {
+      const dx = x2 - x1, dy = y2 - y1;
+      const len = Math.hypot(dx, dy) || 1e-6;
+      const ux = dx / len, uy = dy / len;
+      // Move start forward by startOffset, end backward by endOffset
+      const sx = x1 + ux * startOffset;
+      const sy = y1 + uy * startOffset;
+      const tx = x2 - ux * endOffset;
+      const ty = y2 - uy * endOffset;
+      return { sx, sy, tx, ty };
+    }
+    function nodeR(n) { return nodeRadius(n); }
+
+    // Render graph
+    function updateVisualization(data) {
+      g.selectAll("*").remove();
+
+      simulation = d3.forceSimulation(data.nodes)
+        .force("link", d3.forceLink(data.links).id(d => d.id).distance(e => e.type === "similarity" ? 70 : 90).strength(0.2))
+        .force("charge", d3.forceManyBody().strength(-80))
+        .force("collide", d3.forceCollide().radius(d => nodeRadius(d) + 2))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      linkSel = g.append("g")
+        .selectAll("line")
+        .data(data.links)
+        .join("line")
+        .attr("class", "link")
+        .style("stroke", e => e.color || edgeColors[e.type] || "#888")
+        .style("stroke-width", e => edgeWidth(e))
+        .style("stroke-opacity", e => e.type === "similarity" ? 0.5 : 0.9)
+        .attr("marker-end", e => {
+          if (!e.directed || e.type === "similarity") return null;
+          if (e.type === "prereq") return "url(#arrow-prereq)";
+          if (e.type === "coreq") return "url(#arrow-coreq)";
+          if (e.type === "antireq") return "url(#arrow-antireq)";
+          return null;
+        });
+
+      nodeSel = g.append("g")
+        .selectAll("circle")
+        .data(data.nodes)
+        .join("circle")
+        .attr("class", "node")
+        .attr("r", d => nodeRadius(d))
+        .attr("fill", "#90A4AE")
+        .call(d3.drag()
+          .on("start", (ev, d) => { if (!ev.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+          .on("drag", (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+          .on("end", (ev, d) => { if (!ev.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+        )
+        .on("mouseover", handleMouseOver)
+        .on("mouseout", handleMouseOut);
+
+      simulation.on("tick", () => {
+        linkSel.each(function (e) {
+          const s = e.source, t = e.target;
+          if (!s || !t) return;
+          // Trim to the circle boundaries only; the marker tip will land at the new end
+          const p = shortenSegment(s.x, s.y, t.x, t.y, nodeR(s), nodeR(t));
+          d3.select(this)
+            .attr("x1", p.sx).attr("y1", p.sy)
+            .attr("x2", p.tx).attr("y2", p.ty);
+        });
+
+        nodeSel
+          .attr("cx", d => d.x)
+          .attr("cy", d => d.y);
+      });
+
+      updateStats(data);
+      applyFilters(); // reflect current legend state
+    }
+
+    // Data loader
+    function loadNetwork(path) {
+      showMessage(`Loading ${path} …`, "loading");
+      d3.json(path).then(raw => {
+        const data = validateData(raw);
+        currentData = data;
+
+        // Derive unique subjects and years for this dataset
+        allSubjects = Array.from(new Set(data.nodes.map(n => n.subject).filter(Boolean))).sort();
+        allYears = Array.from(new Set(data.nodes.map(n => +n.level).filter(v => Number.isFinite(v)))).sort((a, b) => a - b);
+
+        // Rebuild legend with dynamic sections
+        buildFilterLegend({ subjects: allSubjects, years: allYears });
+
+        updateVisualization(data);
+        showMessage(`Loaded ${data.nodes.length} courses and ${data.links.length} edges`, "info");
+      }).catch(err => {
+        console.error(err);
+        showMessage(`Failed to load ${path}: ${err.message}`, "error");
+      });
+    }
+
+
+    // App bootstrap
+    document.addEventListener("DOMContentLoaded", () => {
+      initializeViz();
+      buildFilterLegend();
+      wireSearch();
+
+      document.getElementById("loose").addEventListener("click", () => { loadNetwork(FILES.loose); setActive("loose"); });
+      document.getElementById("medium").addEventListener("click", () => { loadNetwork(FILES.medium); setActive("medium"); });
+      document.getElementById("medium-tight").addEventListener("click", () => { loadNetwork(FILES.mediumtight); setActive("medium-tight"); });
+      document.getElementById("tight").addEventListener("click", () => { loadNetwork(FILES.tight); setActive("tight"); });
+
+      document.getElementById("reset-zoom").addEventListener("click", () => {
+        svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity); // programmatic reset [web:466]
+      });
+
+      document.getElementById("center-graph").addEventListener("click", () => {
+        if (simulation) simulation.alpha(1).restart(); // reheat layout a bit [web:456]
+      });
+
+      function setActive(id) {
+        document.querySelectorAll(".network-btn").forEach(b => b.classList.remove("active"));
+        document.getElementById(id).classList.add("active");
+      }
+
+      // Initial dataset
+      loadNetwork(FILES.medium);
+    });
+  </script>
+</body>
+
+</html>
