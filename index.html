@@ -13,16 +13,18 @@
   <header>Course Similarity Network Analysis</header>
   <div id="messages"></div>
   <div class="controls">
-    <button id="loose" class="network-btn">Loose (≥0.3)</button>
-    <button id="medium" class="network-btn active">Medium (≥0.5)</button>
-    <button id="medium-tight" class="network-btn">Med‑Tight (≥0.6)</button>
-    <button id="tight" class="network-btn">Tight (≥0.7)</button>
-    <button id="reset-zoom" class="network-btn secondary">Reset Zoom</button>
-    <button id="center-graph" class="network-btn secondary">Re‑center</button>
-    <input id="search" type="search" placeholder="Find course code or title">
+    <div class="button-group">
+      <button id="loose" class="network-btn">Loose (≥0.3)</button>
+      <button id="medium" class="network-btn active">Medium (≥0.5)</button>
+      <button id="medium-tight" class="network-btn">Med‑Tight (≥0.6)</button>
+      <button id="tight" class="network-btn">Tight (≥0.7)</button>
+    </div>
+    <div class="control-group">
+      <button id="reset-zoom" class="network-btn secondary">Reset Zoom</button>
+      <button id="center-graph" class="network-btn secondary">Re‑center</button>
+      <input id="search" type="search" placeholder="Find course or code">
+    </div>
   </div>
-
-
 
   <div id="stage">
     <div id="legend">
@@ -539,8 +541,76 @@
 
       // Initial dataset
       loadNetwork(FILES.medium);
+
+      if (window.innerWidth < 576) {
+        const legend = document.getElementById('legend');
+        
+        // Existing legend collapse functionality
+        legend.addEventListener('click', (e) => {
+            if (e.target === legend || e.target.matches('::before')) {
+                legend.classList.toggle('collapsed');
+            }
+        });
+        
+        // Make legend sections collapsible on mobile
+        function makeCollapsibleSections() {
+            const legendContent = document.getElementById('legend-content');
+            const sections = legendContent.querySelectorAll('.legend-section');
+            
+            sections.forEach((section, index) => {
+                const title = section.querySelector('.legend-title');
+                if (title) {
+                    title.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        section.classList.toggle('collapsed');
+                    });
+                    
+                    // Collapse Subject section by default on very small screens
+                    if (index === 1 && window.innerWidth < 576) { // Bootstrap xs breakpoint
+                        section.classList.add('collapsed');
+                    }
+                }
+            });
+        }
+        
+        // Call this when legend is rebuilt
+        const originalBuildFilterLegend = buildFilterLegend;
+        buildFilterLegend = function(extra) {
+            originalBuildFilterLegend(extra);
+            if (window.innerWidth < 576) {
+                setTimeout(makeCollapsibleSections, 0);
+            }
+        };
+    }
+
+    // Update resize handler to use Bootstrap breakpoints
+    window.addEventListener("resize", () => {
+        const r = document.getElementById("stage").getBoundingClientRect();
+        width = r.width; 
+        height = r.height;
+        svg.attr("width", width).attr("height", height);
+        
+        // Re-apply mobile optimizations based on Bootstrap breakpoints
+        if (window.innerWidth < 576) {
+            // Extra small devices logic
+            makeTouchFriendly();
+        }
+        
+        // Re-center simulation
+        if (simulation) {
+            simulation.force("center", d3.forceCenter(width / 2, height / 2));
+            simulation.alpha(0.3).restart();
+        }
     });
-  </script>
+});
+
+// Helper function for touch-friendly interactions on mobile
+function makeTouchFriendly() {
+    if (window.innerWidth < 576 && nodeSel) {
+        nodeSel.attr("r", d => Math.max(8, nodeRadius(d))); // Minimum 8px radius on mobile
+    }
+}
+    </script>
 </body>
 
 </html>
