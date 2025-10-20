@@ -267,7 +267,10 @@
       const visibleNodes = new Set();
       if (currentData) {
         for (const n of currentData.nodes) {
-          if (passesNodeFilters(n)) visibleNodes.add(n.id);
+          if (passesNodeFilters(n)) {
+              visibleNodes.add(n.id);
+            }
+          }
         }
       }
 
@@ -373,6 +376,29 @@
       }
       const ids = new Set(data.nodes.map(d => d.id));
       data.links = data.links.filter(e => ids.has(e.source) && ids.has(e.target));
+
+      // Merge duplicate antireq edges (make them truly bidirectional)
+      const edgeMap = new Map();
+      const mergedLinks = [];
+
+      for (const link of data.links) {
+        if (link.type === "antireq") {
+          // Create a canonical key for bidirectional antireq edges
+          const key = [link.source, link.target].sort().join("->") + ":antireq";
+
+          if (!edgeMap.has(key)) {
+            // Remove directed property for antireqs to make them undirected
+            const mergedLink = { ...link, directed: false };
+            edgeMap.set(key, mergedLink);
+            mergedLinks.push(mergedLink);
+          }
+        } else {
+          // Keep other edge types as-is
+          mergedLinks.push(link);
+        }
+      }
+
+      data.links = mergedLinks;
       return data;
     }
 
@@ -405,6 +431,28 @@
         .style("left", (event.pageX + 10) + "px")
         .style("top", (event.pageY - 24) + "px");
     }
+
+    function handleEdgeMouseOver(event, e) {
+      tooltip.transition().duration(150).style("opacity", 0.95);
+      const typeName = e.type === "similarity" ? "Similarity" :
+        e.type === "prereq" ? "Prerequisite" :
+          e.type === "coreq" ? "Corequisite" :
+            e.type === "antireq" ? "Antirequisite" : e.type;
+
+      let html = `<strong>${typeName}</strong><br/>`;
+      const sourceId = e.source.id ?? e.source;
+      const targetId = e.target.id ?? e.target;
+      html += `${sourceId} → ${targetId}<br/>`;
+
+      if (e.type === "similarity" && typeof e.value === "number") {
+        html += `<strong>Similarity: ${(e.value * 100).toFixed(1)}%</strong>`;
+      }
+
+      tooltip.html(html)
+        .style("left", (event.pageX + 10) + "px")
+        .style("top", (event.pageY - 24) + "px");
+    }
+
     function handleMouseOut() { tooltip.transition().duration(250).style("opacity", 0); }
 
     // Stats panel
@@ -449,11 +497,13 @@
         .style("stroke", e => e.color || edgeColors[e.type] || "#888")
         .style("stroke-width", e => edgeWidth(e))
         .style("stroke-opacity", e => e.type === "similarity" ? 0.5 : 0.9)
+        .on("mouseover", handleEdgeMouseOver)
+        .on("mouseout", handleMouseOut)
         .attr("marker-end", e => {
-          if (!e.directed || e.type === "similarity") return null;
+          // No arrows for antireqs (they're bidirectional) or similarity edges
+          if (!e.directed || e.type === "similarity" || e.type === "antireq") return null;
           if (e.type === "prereq") return "url(#arrow-prereq)";
           if (e.type === "coreq") return "url(#arrow-coreq)";
-          if (e.type === "antireq") return "url(#arrow-antireq)";
           return null;
         });
 
