@@ -13,18 +13,16 @@
   <header>Course Similarity Network Analysis</header>
   <div id="messages"></div>
   <div class="controls">
-    <div class="button-group">
-      <button id="loose" class="network-btn">Loose (≥0.3)</button>
-      <button id="medium" class="network-btn">Medium (≥0.5)</button>
-      <button id="medium-tight" class="network-btn">Med‑Tight (≥0.6)</button>
-      <button id="tight" class="network-btn active">Tight (≥0.7)</button>
-    </div>
-    <div class="control-group">
-      <button id="reset-zoom" class="network-btn secondary">Reset Zoom</button>
-      <button id="center-graph" class="network-btn secondary">Re‑center</button>
-      <input id="search" type="search" placeholder="Find course or code">
-    </div>
+    <button id="loose" class="network-btn">Loose (≥0.3)</button>
+    <button id="medium" class="network-btn">Medium (≥0.5)</button>
+    <button id="medium-tight" class="network-btn">Med‑Tight (≥0.6)</button>
+    <button id="tight" class="network-btn active">Tight (≥0.7)</button>
+    <button id="reset-zoom" class="network-btn secondary">Reset Zoom</button>
+    <button id="center-graph" class="network-btn secondary">Re‑center</button>
+    <input id="search" type="search" placeholder="Find course code or title">
   </div>
+
+
 
   <div id="stage">
     <div id="legend">
@@ -62,6 +60,17 @@
       const yearOk = activeYears.size > 0 && yrVal !== null && activeYears.has(yrVal);
       return subjOk && yearOk;
     }
+    
+    // Helper: check if node should be visible based on edge type filters and connections
+    function isNodeConnectedToActiveTypes(nodeId, data, activeTypes) {
+      return data.links.some(e => {
+        if (!activeTypes.has(e.type)) return false;
+        const s = e.source.id ?? e.source;
+        const t = e.target.id ?? e.target;
+        return s === nodeId || t === nodeId;
+      });
+    }
+    
     // Edge colors and active filters
     const edgeColors = { similarity: "#9E9E9E", prereq: "#1976D2", coreq: "#2E7D32", antireq: "#C62828" };
     const activeTypes = new Set(["similarity", "prereq", "coreq", "antireq"]);
@@ -268,6 +277,8 @@
       if (currentData) {
         for (const n of currentData.nodes) {
           if (passesNodeFilters(n)) {
+            // Only show node if it's connected to at least one active edge type
+            if (isNodeConnectedToActiveTypes(n.id, currentData, activeTypes)) {
               visibleNodes.add(n.id);
             }
           }
@@ -376,16 +387,16 @@
       }
       const ids = new Set(data.nodes.map(d => d.id));
       data.links = data.links.filter(e => ids.has(e.source) && ids.has(e.target));
-
+      
       // Merge duplicate antireq edges (make them truly bidirectional)
       const edgeMap = new Map();
       const mergedLinks = [];
-
+      
       for (const link of data.links) {
         if (link.type === "antireq") {
           // Create a canonical key for bidirectional antireq edges
           const key = [link.source, link.target].sort().join("->") + ":antireq";
-
+          
           if (!edgeMap.has(key)) {
             // Remove directed property for antireqs to make them undirected
             const mergedLink = { ...link, directed: false };
@@ -397,7 +408,7 @@
           mergedLinks.push(link);
         }
       }
-
+      
       data.links = mergedLinks;
       return data;
     }
@@ -431,28 +442,28 @@
         .style("left", (event.pageX + 10) + "px")
         .style("top", (event.pageY - 24) + "px");
     }
-
+    
     function handleEdgeMouseOver(event, e) {
       tooltip.transition().duration(150).style("opacity", 0.95);
-      const typeName = e.type === "similarity" ? "Similarity" :
-        e.type === "prereq" ? "Prerequisite" :
-          e.type === "coreq" ? "Corequisite" :
-            e.type === "antireq" ? "Antirequisite" : e.type;
-
+      const typeName = e.type === "similarity" ? "Similarity" : 
+                       e.type === "prereq" ? "Prerequisite" :
+                       e.type === "coreq" ? "Corequisite" :
+                       e.type === "antireq" ? "Antirequisite" : e.type;
+      
       let html = `<strong>${typeName}</strong><br/>`;
       const sourceId = e.source.id ?? e.source;
       const targetId = e.target.id ?? e.target;
       html += `${sourceId} → ${targetId}<br/>`;
-
+      
       if (e.type === "similarity" && typeof e.value === "number") {
         html += `<strong>Similarity: ${(e.value * 100).toFixed(1)}%</strong>`;
       }
-
+      
       tooltip.html(html)
         .style("left", (event.pageX + 10) + "px")
         .style("top", (event.pageY - 24) + "px");
     }
-
+    
     function handleMouseOut() { tooltip.transition().duration(250).style("opacity", 0); }
 
     // Stats panel
@@ -591,76 +602,8 @@
 
       // Initial dataset
       loadNetwork(FILES.tight);
-
-      if (window.innerWidth < 576) {
-        const legend = document.getElementById('legend');
-        
-        // Existing legend collapse functionality
-        legend.addEventListener('click', (e) => {
-            if (e.target === legend || e.target.matches('::before')) {
-                legend.classList.toggle('collapsed');
-            }
-        });
-        
-        // Make legend sections collapsible on mobile
-        function makeCollapsibleSections() {
-            const legendContent = document.getElementById('legend-content');
-            const sections = legendContent.querySelectorAll('.legend-section');
-            
-            sections.forEach((section, index) => {
-                const title = section.querySelector('.legend-title');
-                if (title) {
-                    title.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        section.classList.toggle('collapsed');
-                    });
-                    
-                    // Collapse Subject section by default on very small screens
-                    if (index === 1 && window.innerWidth < 576) { // Bootstrap xs breakpoint
-                        section.classList.add('collapsed');
-                    }
-                }
-            });
-        }
-        
-        // Call this when legend is rebuilt
-        const originalBuildFilterLegend = buildFilterLegend;
-        buildFilterLegend = function(extra) {
-            originalBuildFilterLegend(extra);
-            if (window.innerWidth < 576) {
-                setTimeout(makeCollapsibleSections, 0);
-            }
-        };
-    }
-
-    // Update resize handler to use Bootstrap breakpoints
-    window.addEventListener("resize", () => {
-        const r = document.getElementById("stage").getBoundingClientRect();
-        width = r.width; 
-        height = r.height;
-        svg.attr("width", width).attr("height", height);
-        
-        // Re-apply mobile optimizations based on Bootstrap breakpoints
-        if (window.innerWidth < 576) {
-            // Extra small devices logic
-            makeTouchFriendly();
-        }
-        
-        // Re-center simulation
-        if (simulation) {
-            simulation.force("center", d3.forceCenter(width / 2, height / 2));
-            simulation.alpha(0.3).restart();
-        }
     });
-});
-
-// Helper function for touch-friendly interactions on mobile
-function makeTouchFriendly() {
-    if (window.innerWidth < 576 && nodeSel) {
-        nodeSel.attr("r", d => Math.max(8, nodeRadius(d))); // Minimum 8px radius on mobile
-    }
-}
-    </script>
+  </script>
 </body>
 
 </html>
