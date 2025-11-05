@@ -584,10 +584,10 @@
       buildFilterLegend();
       wireSearch();
 
-      document.getElementById("loose").addEventListener("click", () => { loadNetwork(FILES.loose); setActive("loose"); });
-      document.getElementById("medium").addEventListener("click", () => { loadNetwork(FILES.medium); setActive("medium"); });
-      document.getElementById("medium-tight").addEventListener("click", () => { loadNetwork(FILES.mediumtight); setActive("medium-tight"); });
-      document.getElementById("tight").addEventListener("click", () => { loadNetwork(FILES.tight); setActive("tight"); });
+      document.getElementById("loose")?.addEventListener("click", () => { loadNetwork(FILES.loose); setActive("loose"); });
+      document.getElementById("medium")?.addEventListener("click", () => { loadNetwork(FILES.medium); setActive("medium"); });
+      document.getElementById("medium-tight")?.addEventListener("click", () => { loadNetwork(FILES.mediumtight); setActive("medium-tight"); });
+      document.getElementById("tight")?.addEventListener("click", () => { loadNetwork(FILES.tight); setActive("tight"); });
 
       document.getElementById("reset-zoom").addEventListener("click", () => {
         svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity); // programmatic reset [web:466]
